@@ -1,0 +1,186 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String?
+  googleId     String?  @unique
+  tier         UserTier @default(FREE)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  exchangeConnections  ExchangeConnection[]
+  gridStrategies       GridStrategy[]
+  activeDeployments    ActiveDeployment[]
+  subscriptions        Subscription[]
+  notifications        Notification[]
+
+  @@map("users")
+}
+
+model ExchangeConnection {
+  id                String            @id @default(cuid())
+  userId            String
+  exchangeName      String
+  encryptedCredentials String          // JSON encrypted string
+  isActive          Boolean           @default(true)
+  lastConnectedAt   DateTime?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("exchange_connections")
+}
+
+model GridStrategy {
+  id              String          @id @default(cuid())
+  userId          String
+  tradingPair     String
+  parameters      Json            // GridParameters
+  backtestResults Json?           // BacktestResults
+  status          GridStatus      @default(DRAFT)
+  isPublic        Boolean         @default(false)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  // Relations
+  user               User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activeDeployments  ActiveDeployment[]
+
+  @@map("grid_strategies")
+}
+
+model ActiveDeployment {
+  id               String            @id @default(cuid())
+  gridStrategyId   String            @unique
+  status           DeploymentStatus  @default(INACTIVE)
+  currentPnl       Decimal           @default(0) @db.Decimal(18, 8)
+  currentPnlPercent Decimal          @default(0) @db.Decimal(10, 4)
+  totalInvested    Decimal           @db.Decimal(18, 8)
+  currentValue      Decimal           @db.Decimal(18, 8)
+  startTime         DateTime?
+  endTime           DateTime?
+  openOrders        Int               @default(0)
+  completedTrades   Int               @default(0)
+  lastUpdatedAt     DateTime          @default(now())
+  createdAt         DateTime          @default(now())
+
+  // Relations
+  gridStrategy GridStrategy @relation(fields: [gridStrategyId], references: [id], onDelete: Cascade)
+
+  @@map("active_deployments")
+}
+
+model Subscription {
+  id                    String              @id @default(cuid())
+  userId                String
+  tier                  UserTier
+  status                SubscriptionStatus @default(ACTIVE)
+  stripeSubscriptionId  String?             @unique
+  stripeCustomerId      String?             @unique
+  currentPeriodStart    DateTime
+  currentPeriodEnd      DateTime
+  cancelAtPeriodEnd     Boolean             @default(false)
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("subscriptions")
+}
+
+model Notification {
+  id        String            @id @default(cuid())
+  userId    String
+  type      NotificationType
+  title     String
+  message   String
+  isRead    Boolean           @default(false)
+  data      Json?             // Additional notification data
+  createdAt DateTime          @default(now())
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notifications")
+}
+
+model TradingSession {
+  id           String   @id @default(cuid())
+  userId       String
+  startTime    DateTime @default(now())
+  endTime      DateTime?
+  ipAddress    String?
+  userAgent    String?
+  isActive     Boolean  @default(true)
+  lastActivity DateTime @default(now())
+
+  @@map("trading_sessions")
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  action    String
+  resource  String
+  details   Json?    // Additional audit details
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@map("audit_logs")
+}
+
+// Enums
+enum UserTier {
+  FREE
+  PRO
+  PREMIUM
+}
+
+enum GridStatus {
+  DRAFT
+  TESTED
+  ACTIVE
+  PAUSED
+  COMPLETED
+}
+
+enum DeploymentStatus {
+  INACTIVE
+  ACTIVE
+  PAUSED
+  STOPPED
+  ERROR
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELED
+  PAST_DUE
+  UNPAID
+}
+
+enum NotificationType {
+  GRID_PROFIT
+  GRID_LOSS
+  DEPLOYMENT_STARTED
+  DEPLOYMENT_STOPPED
+  PRICE_ALERT
+  SYSTEM_MAINTENANCE
+}

@@ -1,4 +1,4 @@
-import { Request, Response } from 'express';
+import { Request, Response, NextFunction } from 'express';
 import { validationResult } from 'express-validator';
 import passport from 'passport';
 import { AuthService } from '../services/auth.service';
@@ -23,12 +23,12 @@ export class AuthController {
       const { email, password } = req.body;
 
       // Validate with Zod schema
-      const validationResult = validateRegister({ email, password });
-      if (!validationResult.success) {
+      const zodResult = validateRegister({ email, password });
+      if (!zodResult.success) {
         return res.status(400).json({
           success: false,
           error: 'Invalid input data',
-          details: validationResult.error.issues
+          details: zodResult.error.issues
         } as ApiResponse);
       }
 
@@ -65,12 +65,12 @@ export class AuthController {
       const { email, password } = req.body;
 
       // Validate with Zod schema
-      const validationResult = validateLogin({ email, password });
-      if (!validationResult.success) {
+      const zodResult = validateLogin({ email, password });
+      if (!zodResult.success) {
         return res.status(400).json({
           success: false,
           error: 'Invalid input data',
-          details: validationResult.error.issues
+          details: zodResult.error.issues
         } as ApiResponse);
       }
 
@@ -93,6 +93,7 @@ export class AuthController {
 
   // Google OAuth login
   async googleAuth(req: Request, res: Response, next: NextFunction) {
+    // Real Google OAuth authentication
     passport.authenticate('google', {
       scope: ['profile', 'email'],
       session: false
@@ -104,7 +105,7 @@ export class AuthController {
     passport.authenticate('google', {
       session: false,
       failureRedirect: `${process.env.CORS_ORIGIN}/login?error=google-auth-failed`
-    }, (err: any, user: any) => {
+    }, async (err: any, user: any) => {
       if (err) {
         return res.redirect(`${process.env.CORS_ORIGIN}/login?error=${encodeURIComponent(err.message)}`);
       }
@@ -113,14 +114,17 @@ export class AuthController {
         return res.redirect(`${process.env.CORS_ORIGIN}/login?error=authentication-failed`);
       }
 
-      // Generate tokens for OAuth user
-      const authService = new AuthService();
-      // This would need to be implemented in the service
-      // For now, we'll create a simple token
-      const token = 'simple-jwt-token-for-oauth';
+      try {
+        // Generate proper JWT tokens for OAuth user
+        const result = await this.authService.oauthLogin(user);
 
-      // Redirect to frontend with token
-      res.redirect(`${process.env.CORS_ORIGIN}/auth/callback?token=${token}`);
+        // Redirect to frontend with tokens in URL parameters
+        const redirectUrl = `${process.env.CORS_ORIGIN}/auth/callback?accessToken=${result.accessToken}&refreshToken=${result.refreshToken}`;
+        res.redirect(redirectUrl);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'OAuth token generation failed';
+        res.redirect(`${process.env.CORS_ORIGIN}/login?error=${encodeURIComponent(errorMessage)}`);
+      }
     })(req, res, next);
   }
 
@@ -186,6 +190,13 @@ export class AuthController {
           error: 'Not authenticated'
         } as ApiResponse);
       }
+
+      // Prevent caching of user data
+      res.set({
+        'Cache-Control': 'no-store, no-cache, must-revalidate, private',
+        'Pragma': 'no-cache',
+        'Expires': '0'
+      });
 
       res.json({
         success: true,

@@ -10,15 +10,17 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@gridtrader/shared": "file:../shared",
+    "@types/react-router-dom": "^5.3.3",
+    "axios": "^1.12.2",
+    "clsx": "^2.0.0",
+    "lucide-react": "^0.294.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-router-dom": "^6.20.1",
-    "axios": "^1.6.2",
-    "react-query": "^3.39.3",
     "react-hook-form": "^7.48.2",
     "react-hot-toast": "^2.4.1",
-    "lucide-react": "^0.294.0",
-    "clsx": "^2.0.0",
+    "react-query": "^3.39.3",
+    "react-router-dom": "^6.30.1",
     "tailwind-merge": "^2.0.0"
   },
   "devDependencies": {

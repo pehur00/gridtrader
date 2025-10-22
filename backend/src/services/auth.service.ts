@@ -1,9 +1,35 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../config/database';
-import { User, UserTier, AuthResponse } from '@gridtrader/shared';
+import { User, AuthResponse, UserTier } from '@gridtrader/shared';
+import { User as PrismaUser, UserTier as PrismaUserTier } from '@prisma/client';
 
 export class AuthService {
+
+  // Convert Prisma User to shared User type
+  private convertToSharedUser(prismaUser: PrismaUser): User {
+    return {
+      id: prismaUser.id,
+      email: prismaUser.email,
+      tier: this.convertUserTier(prismaUser.tier),
+      createdAt: prismaUser.createdAt,
+      updatedAt: prismaUser.updatedAt,
+    };
+  }
+
+  // Convert Prisma UserTier to shared UserTier
+  private convertUserTier(prismaTier: PrismaUserTier): UserTier {
+    switch (prismaTier) {
+      case PrismaUserTier.FREE:
+        return UserTier.FREE;
+      case PrismaUserTier.PRO:
+        return UserTier.PRO;
+      case PrismaUserTier.PREMIUM:
+        return UserTier.PREMIUM;
+      default:
+        return UserTier.FREE;
+    }
+  }
   // Register new user
   async register(email: string, password: string): Promise<AuthResponse> {
     // Check if user already exists
@@ -23,7 +49,7 @@ export class AuthService {
       data: {
         email,
         passwordHash,
-        tier: UserTier.FREE,
+        tier: PrismaUserTier.FREE,
       },
       select: {
         id: true,
@@ -41,7 +67,7 @@ export class AuthService {
     await this.storeRefreshToken(user.id, refreshToken);
 
     return {
-      user,
+      user: this.convertToSharedUser(user),
       accessToken,
       refreshToken,
     };
@@ -201,6 +227,23 @@ export class AuthService {
   private async removeRefreshToken(userId: string): Promise<void> {
     // Remove refresh token from storage
     // await redis.del(`refresh_token:${userId}`);
+  }
+
+  // OAuth login for Google/other providers
+  async oauthLogin(user: PrismaUser): Promise<AuthResponse> {
+    const sharedUser = this.convertToSharedUser(user);
+
+    // Generate tokens
+    const { accessToken, refreshToken } = this.generateTokens(sharedUser);
+
+    // Store refresh token hash
+    await this.storeRefreshToken(sharedUser.id, refreshToken);
+
+    return {
+      user: sharedUser,
+      accessToken,
+      refreshToken,
+    };
   }
 
   // Verify refresh token (for middleware)

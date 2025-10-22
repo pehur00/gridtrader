@@ -66,6 +66,7 @@ model GridStrategy {
 
 model ActiveDeployment {
   id               String            @id @default(cuid())
+  userId           String
   gridStrategyId   String            @unique
   status           DeploymentStatus  @default(INACTIVE)
   currentPnl       Decimal           @default(0) @db.Decimal(18, 8)
@@ -80,6 +81,7 @@ model ActiveDeployment {
   createdAt         DateTime          @default(now())
 
   // Relations
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   gridStrategy GridStrategy @relation(fields: [gridStrategyId], references: [id], onDelete: Cascade)
 
   @@map("active_deployments")

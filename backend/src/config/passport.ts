@@ -2,7 +2,6 @@ import passport from 'passport';
 import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
 import { Strategy as JwtStrategy, ExtractJwt } from 'passport-jwt';
 import { prisma } from './database';
-import { UserTier } from '@gridtrader/shared';
 
 // Google OAuth Strategy
 passport.use(new GoogleStrategy({
@@ -24,7 +23,7 @@ passport.use(new GoogleStrategy({
       data: {
         email: profile.emails![0].value,
         googleId: profile.id,
-        tier: UserTier.FREE,
+        tier: 'FREE',
       }
     });
 

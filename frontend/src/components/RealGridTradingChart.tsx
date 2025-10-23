@@ -241,6 +241,7 @@ const RealGridTradingChart: React.FC<RealGridTradingChartProps> = ({ showGridLin
             strokeWidth={2}
             dot={false}
             activeDot={{ r: 4, fill: '#3B82F6' }}
+            isAnimationActive={false}
           />
         </LineChart>
       </ResponsiveContainer>

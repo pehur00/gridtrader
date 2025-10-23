@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import RealGridTradingChart from '../components/RealGridTradingChart';
+import BacktestResults from '../components/BacktestResults';
 import { optimizeGridParameters } from '../utils/gridOptimizer';
+import { runBacktest } from '../utils/backtestSimulator';
 
 interface PriceData {
   time: number;
@@ -22,10 +24,30 @@ interface GridParams {
   avgTradeTime: number;
 }
 
+interface BacktestData {
+  trades: any[];
+  totalTrades: number;
+  profitableTrades: number;
+  totalProfit: number;
+  totalReturn: number;
+  winRate: number;
+  maxDrawdown: number;
+  sharpeRatio: number;
+  investmentAmount: number;
+}
+
 const LandingPage: React.FC = () => {
   const [currentPrice, setCurrentPrice] = useState<number>(0);
   const [priceChange24h, setPriceChange24h] = useState<number>(0);
   const [gridParams, setGridParams] = useState<GridParams | null>(null);
+  const [backtestData, setBacktestData] = useState<BacktestData | null>(null);
+  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(false);
+
+  // Check if user is logged in
+  useEffect(() => {
+    const token = localStorage.getItem('accessToken');
+    setIsLoggedIn(!!token);
+  }, []);
 
   // Handle data loaded from the chart
   const handleChartDataLoaded = (data: PriceData[], latestPrice: number) => {
@@ -34,6 +56,21 @@ const LandingPage: React.FC = () => {
     // Run grid optimization with real historical data
     const optimizedParams = optimizeGridParameters(data, latestPrice);
     setGridParams(optimizedParams);
+
+    // Run backtest simulation with optimized parameters
+    if (optimizedParams) {
+      const backtest = runBacktest(
+        data,
+        {
+          priceRange: optimizedParams.priceRange,
+          gridLevels: optimizedParams.gridLevels,
+          gridSpacing: optimizedParams.gridSpacing,
+          profitPerGrid: optimizedParams.profitPerGrid
+        },
+        10000 // $10,000 investment
+      );
+      setBacktestData(backtest);
+    }
   };
 
   // Fetch current BTC price and 24h change
@@ -323,56 +360,31 @@ const LandingPage: React.FC = () => {
 
         {/* Backtest Section */}
         <div className="bg-gradient-to-br from-gray-800/50 to-gray-900/50 border border-gray-700 rounded-2xl p-8 mb-16">
-          <div className="flex items-start gap-4">
-            <div className="flex-shrink-0">
-              <div className="w-12 h-12 bg-blue-500/10 rounded-lg flex items-center justify-center">
-                <svg className="w-6 h-6 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div className="mb-6">
+            <div className="flex items-center gap-3 mb-2">
+              <div className="w-10 h-10 bg-blue-500/10 rounded-lg flex items-center justify-center">
+                <svg className="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
                 </svg>
               </div>
+              <h3 className="text-2xl font-bold text-white">90-Day Historical Backtest</h3>
             </div>
-            <div className="flex-1">
-              <h3 className="text-2xl font-bold text-white mb-2">Historical Backtest Results</h3>
-              <p className="text-gray-400 mb-4">
-                See how this exact grid configuration performed over the past 30 days with real market data.
-              </p>
-
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-                <div className="bg-gray-900/50 rounded-lg p-4">
-                  <div className="text-sm text-gray-400 mb-1">Total Return</div>
-                  <div className="text-2xl font-bold text-green-400">+18.7%</div>
-                </div>
-                <div className="bg-gray-900/50 rounded-lg p-4">
-                  <div className="text-sm text-gray-400 mb-1">Win Rate</div>
-                  <div className="text-2xl font-bold text-white">94.2%</div>
-                </div>
-                <div className="bg-gray-900/50 rounded-lg p-4">
-                  <div className="text-sm text-gray-400 mb-1">Max Drawdown</div>
-                  <div className="text-2xl font-bold text-yellow-400">-3.2%</div>
-                </div>
-                <div className="bg-gray-900/50 rounded-lg p-4">
-                  <div className="text-sm text-gray-400 mb-1">Sharpe Ratio</div>
-                  <div className="text-2xl font-bold text-white">2.84</div>
-                </div>
-              </div>
-
-              {/* Login Gate */}
-              <div className="flex items-center gap-4">
-                <Link
-                  to="/login"
-                  className="inline-flex items-center gap-2 bg-blue-500 hover:bg-blue-600 text-white px-6 py-3 rounded-lg font-semibold transition-all"
-                >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                  </svg>
-                  Login to View Full Backtest
-                </Link>
-                <span className="text-sm text-gray-400">
-                  Includes detailed trade history, risk metrics, and parameter analysis
-                </span>
-              </div>
-            </div>
+            <p className="text-gray-400">
+              See how this exact grid configuration performed with real BTC/USDT market data.
+              {!isLoggedIn && ' Login to view detailed trade-by-trade analysis.'}
+            </p>
           </div>
+
+          {backtestData ? (
+            <BacktestResults backtestData={backtestData} isBlurred={!isLoggedIn} />
+          ) : (
+            <div className="flex items-center justify-center py-12">
+              <div className="text-center">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-400 mx-auto mb-4"></div>
+                <p className="text-gray-400 text-sm">Running backtest simulation...</p>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* How It Works */}

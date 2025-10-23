@@ -62,6 +62,12 @@ export interface GridParameters {
   totalInvestment: number;
   spacing: GridSpacing;
   riskLevel: RiskLevel;
+  // Leverage-related fields
+  leverage?: number; // 1-10x multiplier
+  effectiveCapital?: number; // totalInvestment * leverage
+  liquidationPrice?: number; // Price at which position gets liquidated
+  marginRequirement?: number; // Required margin per grid level
+  fundingFeeRate?: number; // Expected daily funding fee rate (for perpetuals)
 }
 
 export enum GridSpacing {

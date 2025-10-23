@@ -19,8 +19,8 @@ const LoginPage: React.FC = () => {
     try {
       await login(email, password);
 
-      // Redirect to the page they came from, or dashboard if no referrer
-      const from = (location.state as any)?.from?.pathname || '/dashboard';
+      // Redirect to the page they came from, or home if no referrer
+      const from = (location.state as any)?.from?.pathname || '/';
       navigate(from, { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
@@ -131,7 +131,12 @@ const LoginPage: React.FC = () => {
 
             <button
               type="button"
-              onClick={() => window.location.href = 'http://localhost:3005/api/auth/google'}
+              onClick={() => {
+                // Store the redirect path before OAuth flow
+                const from = (location.state as any)?.from?.pathname || '/';
+                sessionStorage.setItem('redirectAfterLogin', from);
+                window.location.href = 'http://localhost:3005/api/auth/google';
+              }}
               className="w-full bg-white hover:bg-gray-50 text-gray-900 py-3 px-4 rounded-lg font-medium transition-all flex items-center justify-center gap-3"
             >
               <svg className="h-5 w-5" viewBox="0 0 24 24">

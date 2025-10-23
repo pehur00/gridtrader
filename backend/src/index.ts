@@ -1,18 +1,34 @@
+// Load environment variables FIRST
+import './config/env';
+
 import express from 'express';
+import { createServer } from 'http';
+import { Server } from 'socket.io';
 import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
-import dotenv from 'dotenv';
 import passport from './config/passport';
 
 // Import routes
 import authRoutes from './routes/auth.routes';
+import marketDataRoutes from './routes/marketData.routes';
+import gridOptimizerRoutes from './routes/gridOptimizer.routes';
+import monteCarloRoutes from './routes/monteCarlo.routes';
 
-// Load environment variables
-dotenv.config();
+// Import socket handlers
+import { setupMarketDataSocket } from './socket/marketData.socket';
 
 const app = express();
+const httpServer = createServer(app);
+const io = new Server(httpServer, {
+  cors: {
+    origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
+    methods: ['GET', 'POST'],
+    credentials: true
+  }
+});
+
 const PORT = process.env.PORT || 3001;
 
 // Security middleware
@@ -75,6 +91,12 @@ app.get('/health', (req, res) => {
 
 // API routes
 app.use('/api/auth', authRoutes);
+app.use('/api/market', marketDataRoutes);
+app.use('/api/grid', gridOptimizerRoutes);
+app.use('/api/montecarlo', monteCarloRoutes);
+
+// Setup Socket.IO handlers
+setupMarketDataSocket(io);
 
 // 404 handler
 app.use('*', (req, res) => {
@@ -129,10 +151,11 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
 });
 
 // Start server
-app.listen(PORT, () => {
+httpServer.listen(PORT, () => {
   console.log(`🚀 GridTrader API server running on port ${PORT}`);
   console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🔗 API URL: http://localhost:${PORT}`);
+  console.log(`🔌 WebSocket URL: ws://localhost:${PORT}`);
   console.log(`❤️  Health check: http://localhost:${PORT}/health`);
 });
 

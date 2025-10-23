@@ -1,9 +1,19 @@
-import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
-import RealGridTradingChart from '../components/RealGridTradingChart';
-import BacktestResults from '../components/BacktestResults';
-import { optimizeGridParameters } from '../utils/gridOptimizer';
-import { runBacktest } from '../utils/backtestSimulator';
+import React, { useState, useCallback, useRef } from 'react';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
+import CompactChart from '../components/CompactChart';
+import MiniMonteCarloWidget from '../components/MiniMonteCarloWidget';
+import CompactParameterCards from '../components/CompactParameterCards';
+import ConfigurationPanel from '../components/ConfigurationPanel';
+import ProjectionSummaryCard from '../components/ProjectionSummaryCard';
+import SymbolSelector from '../components/SymbolSelector';
+import { AIGridOptimizer } from '../components/AIGridOptimizer';
+import { optimizeGridWithAI, generateAIAnalysis } from '../utils/aiGridOptimizer';
+import { runMonteCarloSimulation } from '../utils/monteCarloSimulator';
+import { useMarketData } from '../hooks/useMarketData';
+import { use24hTicker } from '../hooks/use24hTicker';
+import { useAuth } from '../contexts/AuthContext';
+import { UserTier } from '@gridtrader/shared';
+import type { OptimizedGridSetup } from '../utils/completeGridOptimizer';
 
 interface PriceData {
   time: number;
@@ -19,47 +29,79 @@ interface GridParams {
   confidence: number;
   volatilityScore: number;
   marketRegime: 'ranging' | 'trending' | 'highly_volatile';
-  estimatedProfit24h: number;
-  estimatedFills24h: number;
+  predictedRange3M: any;
+  expectedVolatility: number;
+  seasonalityFactor: number;
+  trendPrediction: 'bullish' | 'bearish' | 'neutral';
+  optimalEntryZones: number[];
+  riskScore: number;
+  estimatedProfit3M: number;
+  estimatedFills3M: number;
   avgTradeTime: number;
+  recommendedInvestment: number;
+  estimatedProfit24h?: number;
+  estimatedFills24h?: number;
 }
 
-interface BacktestData {
-  trades: any[];
-  totalTrades: number;
-  profitableTrades: number;
-  totalProfit: number;
-  totalReturn: number;
-  winRate: number;
-  maxDrawdown: number;
-  sharpeRatio: number;
+interface MonteCarloData {
+  scenarios: any[];
+  statistics: any;
+  fanChartData: any[];
   investmentAmount: number;
+  projectionDays: number;
 }
 
 const LandingPage: React.FC = () => {
-  const [currentPrice, setCurrentPrice] = useState<number>(0);
-  const [priceChange24h, setPriceChange24h] = useState<number>(0);
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { user, logout: authLogout } = useAuth();
+  const [selectedSymbol, setSelectedSymbol] = useState<string>('BTCUSDT');
+  const { currentPrice } = useMarketData(selectedSymbol);
+  const { tickerData } = use24hTicker(selectedSymbol);
   const [gridParams, setGridParams] = useState<GridParams | null>(null);
-  const [backtestData, setBacktestData] = useState<BacktestData | null>(null);
-  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(false);
+  const [monteCarloData, setMonteCarloData] = useState<MonteCarloData | null>(null);
+  const [aiAnalysis, setAiAnalysis] = useState<string>('');
+  const [budget, setBudget] = useState<number>(1000);
+  const [leverage, setLeverage] = useState<number>(3);
+  const [customPrice, setCustomPrice] = useState<number | null>(null);
+  const [showAIOptimizer, setShowAIOptimizer] = useState<boolean>(false);
+  const [optimizedSetup, setOptimizedSetup] = useState<OptimizedGridSetup | null>(null);
+  const isLoggedIn = !!user;
+  const normalizedTier = user?.tier ?? UserTier.FREE;
+  const isPremium = normalizedTier === UserTier.PREMIUM || normalizedTier === UserTier.PRO;
+  
+  // Fix user email display
+  const userEmail = user?.email || 'User';
+  const userInitial = userEmail.charAt(0).toUpperCase() || '?';
+  const tierLabel = normalizedTier.charAt(0).toUpperCase() + normalizedTier.slice(1);
 
-  // Check if user is logged in
-  useEffect(() => {
-    const token = localStorage.getItem('accessToken');
-    setIsLoggedIn(!!token);
-  }, []);
+  // Logout handler
+  const handleLogout = async () => {
+    await authLogout();
+    navigate('/', { replace: true });
+  };
 
-  // Handle data loaded from the chart
-  const handleChartDataLoaded = (data: PriceData[], latestPrice: number) => {
-    setCurrentPrice(latestPrice);
+  // Use ref to track if optimization has already run to prevent excessive re-runs
+  const hasOptimizedRef = useRef(false);
 
-    // Run grid optimization with real historical data
-    const optimizedParams = optimizeGridParameters(data, latestPrice);
+  // Handle data loaded from the chart (memoized to prevent excessive re-renders)
+  const handleChartDataLoaded = useCallback((data: PriceData[], latestPrice: number) => {
+    // Only run optimization once per session unless symbol changes
+    if (hasOptimizedRef.current) {
+      return;
+    }
+
+    // Run AI optimization
+    const optimizedParams = optimizeGridWithAI(data, latestPrice);
     setGridParams(optimizedParams);
 
-    // Run backtest simulation with optimized parameters
+    // Generate AI analysis text
+    const analysis = generateAIAnalysis(optimizedParams);
+    setAiAnalysis(analysis);
+
+    // Run Monte Carlo forward projection
     if (optimizedParams) {
-      const backtest = runBacktest(
+      const monteCarlo = runMonteCarloSimulation(
         data,
         {
           priceRange: optimizedParams.priceRange,
@@ -67,398 +109,380 @@ const LandingPage: React.FC = () => {
           gridSpacing: optimizedParams.gridSpacing,
           profitPerGrid: optimizedParams.profitPerGrid
         },
-        10000 // $10,000 investment
+        budget, // Custom budget
+        leverage, // Custom leverage
+        1000, // 1000 simulations
+        90  // 90 days forward
       );
-      setBacktestData(backtest);
+      setMonteCarloData(monteCarlo);
     }
+
+    hasOptimizedRef.current = true;
+  }, []);
+
+  const handleSymbolChange = (symbol: string) => {
+    setSelectedSymbol(symbol);
+    setGridParams(null);
+    setMonteCarloData(null);
+    hasOptimizedRef.current = false; // Reset flag to allow re-optimization for new symbol
   };
 
-  // Fetch current BTC price and 24h change
-  useEffect(() => {
-    const fetchCurrentPrice = async () => {
-      try {
-        const response = await fetch('https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT');
-        const data = await response.json();
-        setCurrentPrice(parseFloat(data.lastPrice));
-        setPriceChange24h(parseFloat(data.priceChangePercent));
-      } catch (error) {
-        console.error('Error fetching current price:', error);
-      }
-    };
-
-    fetchCurrentPrice();
-
-    // Set up WebSocket for real-time price updates
-    const ws = new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');
-
-    ws.onmessage = (event) => {
-      const trade = JSON.parse(event.data);
-      setCurrentPrice(parseFloat(trade.p));
-    };
-
-    return () => {
-      ws.close();
-    };
-  }, []);
   return (
     <div className="min-h-screen bg-gradient-to-b from-gray-900 via-gray-800 to-gray-900">
-      {/* Navigation */}
+      {/* Condensed Navigation */}
       <nav className="border-b border-gray-800 bg-gray-900/50 backdrop-blur-sm sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center h-16">
-            <div className="flex items-center">
-              <span className="text-2xl font-bold bg-gradient-to-r from-yellow-400 to-orange-500 bg-clip-text text-transparent">
-                GridTrader
-              </span>
-              <span className="ml-2 text-xs text-gray-400 font-semibold">AI</span>
-            </div>
+        <div className="w-full">
+          <div className="flex justify-between items-center h-14">
             <div className="flex items-center gap-4">
-              <Link
-                to="/login"
-                className="text-gray-300 hover:text-white px-4 py-2 rounded-lg transition-colors"
-              >
-                Log In
-              </Link>
-              <Link
-                to="/register"
-                className="bg-gradient-to-r from-yellow-400 to-orange-500 text-gray-900 px-6 py-2 rounded-lg font-semibold hover:from-yellow-500 hover:to-orange-600 transition-all transform hover:scale-105"
-              >
-                Get Started Free
-              </Link>
+              <span className="text-xl font-bold bg-gradient-to-r from-yellow-400 to-orange-500 bg-clip-text text-transparent">
+                GridTrader AI
+              </span>
+              <SymbolSelector
+                selectedSymbol={selectedSymbol}
+                onSymbolChange={handleSymbolChange}
+                isPremium={isPremium}
+              />
+            </div>
+            <div className="flex items-center gap-3">
+              {!isLoggedIn && (
+                <>
+                  <Link
+                    to="/login"
+                    state={{ from: location }}
+                    className="text-gray-300 hover:text-white px-3 py-1.5 rounded-lg transition-colors text-sm"
+                  >
+                    Login
+                  </Link>
+                  <Link
+                    to="/register"
+                    className="bg-gradient-to-r from-yellow-400 to-orange-500 text-gray-900 px-4 py-1.5 rounded-lg font-semibold hover:from-yellow-500 hover:to-orange-600 transition-all text-sm"
+                  >
+                    Get Started
+                  </Link>
+                </>
+              )}
+              {isLoggedIn && user && (
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="h-9 w-9 rounded-full bg-yellow-500/20 flex items-center justify-center text-yellow-300 font-semibold uppercase">
+                      {userInitial}
+                    </div>
+                    <div className="flex flex-col leading-tight">
+                      <span className="text-sm font-semibold text-white">
+                        {userEmail}
+                      </span>
+                      <span className="text-xs text-gray-400 uppercase tracking-wide">
+                        {tierLabel}
+                      </span>
+                    </div>
+                    {isPremium && (
+                      <span className="bg-yellow-500/20 text-yellow-400 px-3 py-1 rounded-full text-xs font-semibold">
+                        👑 Premium
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    onClick={handleLogout}
+                    className="text-gray-300 hover:text-white px-3 py-1.5 rounded-lg transition-colors text-sm border border-gray-700/60 hover:border-yellow-500/60"
+                  >
+                    Logout
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>
       </nav>
 
-      {/* Hero Section */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-12 pb-16">
-        <div className="text-center mb-12">
-          <div className="inline-flex items-center gap-2 bg-yellow-500/10 border border-yellow-500/20 rounded-full px-4 py-2 mb-6">
-            <span className="text-yellow-400 text-sm font-semibold">🎯 FREE BTC/USDT Grid Bot</span>
-            <span className="text-gray-400 text-sm">AI-Optimized • No credit card required</span>
-          </div>
-
-          <h1 className="text-4xl lg:text-5xl font-bold text-white mb-4 leading-tight">
-            Profit from Bitcoin Volatility with
-            <br />
-            <span className="bg-gradient-to-r from-yellow-400 to-orange-500 bg-clip-text text-transparent">
-              AI-Powered Grid Trading
-            </span>
-          </h1>
-
-          <p className="text-lg text-gray-400 mb-8 max-w-3xl mx-auto">
-            Our AI analyzes market conditions and automatically optimizes your grid parameters.
-            Start with a free BTC/USDT bot and see results in minutes.
-          </p>
-
-          <div className="flex flex-col sm:flex-row gap-4 justify-center mb-8">
-            <Link
-              to="/register"
-              className="bg-gradient-to-r from-yellow-400 to-orange-500 text-gray-900 px-8 py-4 rounded-lg font-semibold text-lg hover:from-yellow-500 hover:to-orange-600 transition-all transform hover:scale-105 text-center shadow-lg shadow-yellow-500/20"
-            >
-              Deploy Free Grid Bot →
-            </Link>
-            <Link
-              to="/login"
-              className="border-2 border-gray-600 text-white px-8 py-4 rounded-lg font-semibold text-lg hover:border-yellow-500 hover:bg-gray-800/50 transition-all text-center"
-            >
-              View Backtest Results
-            </Link>
+      {/* Condensed Main Content - Single Screen */}
+      <div className="w-full py-6">
+        {/* Header Stats Bar */}
+        <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-4 mb-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="flex items-center gap-3">
+                <h1 className="text-2xl font-bold text-white">
+                  {selectedSymbol.replace('USDT', '/USDT')}
+                </h1>
+                <span className="bg-green-500/20 text-green-400 text-xs font-semibold px-3 py-1 rounded-full">
+                  AI-OPTIMIZED
+                </span>
+                {gridParams && (
+                  <span className={`text-xs font-semibold px-3 py-1 rounded-full ${
+                    gridParams.marketRegime === 'ranging' ? 'bg-green-500/20 text-green-400' :
+                    gridParams.marketRegime === 'trending' ? 'bg-yellow-500/20 text-yellow-400' :
+                    'bg-red-500/20 text-red-400'
+                  }`}>
+                    {gridParams.marketRegime === 'ranging' ? 'RANGING (IDEAL)' :
+                     gridParams.marketRegime === 'trending' ? 'TRENDING' :
+                     'HIGH VOLATILITY'}
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-gray-400 mt-1">1-Year Historical • 90-Day Projection • 1000 Monte Carlo Scenarios</p>
+            </div>
+            <div className="text-right">
+              <div className="text-3xl font-bold text-white">
+                {currentPrice > 0 ? `$${currentPrice.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : 'Loading...'}
+              </div>
+              <div className={`text-sm font-semibold ${tickerData && tickerData.priceChangePercent >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                {tickerData ? `${tickerData.priceChangePercent >= 0 ? '+' : ''}${tickerData.priceChangePercent.toFixed(2)}% (24h)` : 'Loading...'}
+              </div>
+            </div>
           </div>
         </div>
 
-        {/* Main Grid Trading Demo Section */}
-        <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-2xl border border-gray-700 shadow-2xl overflow-hidden mb-16">
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-0">
-            {/* Chart Section - Takes 2 columns */}
-            <div className="lg:col-span-2 p-6 border-r border-gray-700">
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <div className="flex items-center gap-3 mb-2">
-                    <h2 className="text-2xl font-bold text-white">BTC/USDT</h2>
-                    <span className="bg-green-500/20 text-green-400 text-xs font-semibold px-3 py-1 rounded-full">
-                      LIVE GRID ACTIVE
-                    </span>
+        {/* AI Grid Optimizer Section */}
+        {isLoggedIn && (
+          <div className="mb-4">
+            <div className="bg-gradient-to-r from-blue-600/10 to-purple-600/10 border border-blue-500/30 rounded-lg p-4 mb-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-full bg-gradient-to-r from-blue-500 to-purple-600 flex items-center justify-center">
+                    <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                    </svg>
                   </div>
-                  <p className="text-sm text-gray-400">24-Hour Performance View</p>
-                </div>
-                <div className="text-right">
-                  <div className="text-3xl font-bold text-white">
-                    {currentPrice > 0 ? `$${currentPrice.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : 'Loading...'}
-                  </div>
-                  <div className={`text-sm font-semibold ${priceChange24h >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {priceChange24h >= 0 ? '+' : ''}{priceChange24h.toFixed(2)}% (24h)
+                  <div>
+                    <h2 className="text-lg font-bold text-white">AI Grid Optimizer</h2>
+                    <p className="text-xs text-gray-400">Let AI analyze the market and generate optimal grid setups</p>
                   </div>
                 </div>
+                <button
+                  onClick={() => setShowAIOptimizer(!showAIOptimizer)}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg transition-all"
+                >
+                  {showAIOptimizer ? 'Hide Optimizer' : 'Open Optimizer'}
+                </button>
               </div>
+              
+              {showAIOptimizer && (
+                <div className="mt-4 pt-4 border-t border-blue-500/20">
+                  <AIGridOptimizer
+                    symbol={selectedSymbol}
+                    onSetupComplete={(setup) => {
+                      setOptimizedSetup(setup);
+                      // Optionally update the budget/leverage based on AI recommendations
+                      setBudget(setup.metadata.investmentAmount);
+                      setLeverage(setup.gridParameters.recommendedLeverage);
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
-              {/* Trading Chart */}
-              <div className="bg-gray-900/50 rounded-xl p-4 h-[400px]">
-                <RealGridTradingChart showGridLines={true} onDataLoaded={handleChartDataLoaded} />
-              </div>
-
-              {/* Chart Legend */}
-              <div className="flex items-center gap-6 mt-4 text-sm">
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-0.5 bg-blue-500"></div>
-                  <span className="text-gray-400">Price Movement</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-0.5 bg-green-500 border-dashed"></div>
-                  <span className="text-gray-400">Filled Grid Levels</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-0.5 bg-gray-500 border-dashed"></div>
-                  <span className="text-gray-400">Pending Orders</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-0.5 bg-yellow-500"></div>
-                  <span className="text-gray-400">Current Price</span>
-                </div>
-              </div>
+        {/* Budget & Leverage Configuration */}
+        {isLoggedIn && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
+            {/* Configuration Panel */}
+            <div className="lg:col-span-1">
+              <ConfigurationPanel
+                budget={budget}
+                leverage={leverage}
+                currentPrice={currentPrice}
+                onBudgetChange={setBudget}
+                onLeverageChange={setLeverage}
+                onCustomPriceChange={setCustomPrice}
+                customPrice={customPrice}
+              />
             </div>
 
-            {/* Settings & Stats Section */}
-            <div className="p-6 bg-gray-800/30">
-              <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
-                <svg className="w-5 h-5 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                </svg>
-                AI-Optimized Settings
-              </h3>
+            {/* 90-Day Projection Summary */}
+            <div className="lg:col-span-2">
+              <ProjectionSummaryCard
+                expectedProfit={monteCarloData?.statistics?.expectedProfit || gridParams?.estimatedProfit3M || 0}
+                investmentAmount={budget}
+                leverage={leverage}
+                profitProbability={monteCarloData?.statistics?.profitProbability || 65}
+                riskScore={gridParams?.riskScore || 5}
+                projectionDays={90}
+                isLoading={!gridParams}
+              />
+            </div>
+          </div>
+        )}
 
-              <div className="space-y-4 mb-6">
-                {/* Market Regime Indicator */}
-                {gridParams && (
-                  <div className="bg-gradient-to-r from-blue-500/10 to-purple-500/10 border border-blue-500/20 rounded-lg p-3">
-                    <div className="flex items-center gap-2 mb-1">
-                      <div className={`w-2 h-2 rounded-full ${
-                        gridParams.marketRegime === 'ranging' ? 'bg-green-400' :
-                        gridParams.marketRegime === 'trending' ? 'bg-yellow-400' :
-                        'bg-red-400'
-                      }`}></div>
-                      <span className="text-xs font-semibold text-white uppercase">
-                        {gridParams.marketRegime === 'ranging' ? 'Ranging Market' :
-                         gridParams.marketRegime === 'trending' ? 'Trending Market' :
-                         'High Volatility'}
-                      </span>
-                    </div>
-                    <div className="text-xs text-gray-400">
-                      {gridParams.marketRegime === 'ranging'
-                        ? 'Ideal conditions for grid trading'
-                        : gridParams.marketRegime === 'trending'
-                        ? 'Moderate conditions, adjusted parameters'
-                        : 'High volatility detected, wider spacing applied'}
-                    </div>
+        {/* Fee Calculator & Analysis - Only for Premium Users */}
+        {isPremium && (
+          <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-4 mb-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <h3 className="text-lg font-semibold text-white mb-3">💰 Trading Fee Analysis</h3>
+                <div className="space-y-2 text-sm">
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-400">Estimated Daily Trades</span>
+                    <span className="text-green-400 font-semibold">24-48 trades</span>
                   </div>
-                )}
-
-                {/* Grid Parameters */}
-                <div className="bg-gray-900/50 rounded-lg p-4">
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="text-sm text-gray-400">Price Range</span>
-                    <span className="text-sm font-semibold text-white">
-                      {gridParams
-                        ? `$${(gridParams.priceRange.lower / 1000).toFixed(0)}K - $${(gridParams.priceRange.upper / 1000).toFixed(0)}K`
-                        : 'Calculating...'}
-                    </span>
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-400">Grid Spacing</span>
+                    <span className="text-white font-semibold">${Math.round(gridParams?.gridSpacing || 0)}</span>
                   </div>
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="text-sm text-gray-400">Grid Levels</span>
-                    <span className="text-sm font-semibold text-white">
-                      {gridParams ? `${gridParams.gridLevels} orders` : 'Calculating...'}
-                    </span>
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-400">Total Fees (24h)</span>
+                    <span className="text-yellow-400 font-semibold">${Math.round((gridParams?.gridSpacing || 0) * 24 * 0.0006)}</span>
                   </div>
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="text-sm text-gray-400">Profit per Grid</span>
-                    <span className="text-sm font-semibold text-green-400">
-                      {gridParams ? `~${gridParams.profitPerGrid}%` : 'Calculating...'}
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-400">Break-even Trades</span>
+                    <span className="text-green-400 font-semibold">{Math.round((gridParams?.profitPerGrid || 0.5) * 0.0006 * 100)}%</span>
+                  </div>
+                </div>
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold text-white mb-3">⚡ Leverage Optimization</h3>
+                <div className="space-y-2 text-sm">
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-400">Recommended Leverage</span>
+                    <span className={`font-semibold ${
+                      gridParams?.marketRegime === 'ranging' ? 'text-green-400' :
+                      gridParams?.marketRegime === 'trending' ? 'text-yellow-400' : 'text-orange-400'
+                    }`}>
+                      {gridParams?.marketRegime === 'ranging' ? '3-5x (Optimal)' :
+                       gridParams?.marketRegime === 'trending' ? '2-3x (Moderate)' : '1-2x (Conservative)'}
                     </span>
                   </div>
                   <div className="flex justify-between items-center">
-                    <span className="text-sm text-gray-400">Grid Spacing</span>
-                    <span className="text-sm font-semibold text-white">
-                      {gridParams ? `$${gridParams.gridSpacing}` : 'Calculating...'}
+                    <span className="text-gray-400">Expected Sharpe Ratio</span>
+                    <span className="text-white font-semibold">{(gridParams?.volatilityScore || 0.02) * 1000 ? '1.8-2.5' : '1.2-1.8'}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-400">Risk Level</span>
+                    <span className={`font-semibold ${
+                      leverage <= 3 ? 'text-green-400' :
+                      leverage <= 5 ? 'text-yellow-400' : 'text-red-400'
+                    }`}>
+                      {leverage <= 3 ? 'LOW ✅' :
+                       leverage <= 5 ? 'MEDIUM ⚠️' : 'HIGH 🚨'}
                     </span>
                   </div>
-                </div>
-
-                {/* Performance Stats */}
-                <div className="bg-gray-900/50 rounded-lg p-4">
-                  <div className="text-xs text-gray-400 mb-3 uppercase font-semibold">24H Performance (Est.)</div>
-                  <div className="space-y-3">
-                    <div>
-                      <div className="flex justify-between items-center mb-1">
-                        <span className="text-sm text-gray-400">Total Profit</span>
-                        <span className="text-lg font-bold text-green-400">
-                          {gridParams ? `+$${gridParams.estimatedProfit24h.toLocaleString()}` : 'Calculating...'}
-                        </span>
-                      </div>
-                    </div>
-                    <div>
-                      <div className="flex justify-between items-center mb-1">
-                        <span className="text-sm text-gray-400">Estimated Fills</span>
-                        <span className="text-sm font-semibold text-white">
-                          {gridParams ? `~${gridParams.estimatedFills24h} trades` : 'Calculating...'}
-                        </span>
-                      </div>
-                      <div className="w-full bg-gray-700 rounded-full h-2">
-                        <div
-                          className="bg-green-500 h-2 rounded-full transition-all"
-                          style={{
-                            width: gridParams
-                              ? `${Math.min((gridParams.estimatedFills24h / gridParams.gridLevels) * 100, 100)}%`
-                              : '0%'
-                          }}
-                        ></div>
-                      </div>
-                    </div>
-                    <div>
-                      <div className="flex justify-between items-center">
-                        <span className="text-sm text-gray-400">Avg. Trade Time</span>
-                        <span className="text-sm font-semibold text-white">
-                          {gridParams ? `${gridParams.avgTradeTime}h` : 'Calculating...'}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* AI Confidence Badge */}
-                <div className="bg-gradient-to-r from-yellow-500/10 to-orange-500/10 border border-yellow-500/20 rounded-lg p-3">
-                  <div className="flex items-start gap-2">
-                    <svg className="w-4 h-4 text-yellow-400 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
-                      <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
-                    </svg>
-                    <div className="flex-1">
-                      <div className="text-xs font-semibold text-yellow-400 mb-1">
-                        Optimization Confidence: {gridParams ? `${gridParams.confidence}%` : 'Calculating...'}
-                      </div>
-                      <div className="text-xs text-gray-400">
-                        {gridParams
-                          ? `Based on ATR analysis, volatility patterns, and ${gridParams.marketRegime === 'ranging' ? 'ideal' : gridParams.marketRegime === 'trending' ? 'moderate' : 'challenging'} market conditions`
-                          : 'Analyzing 90 days of historical data...'}
-                      </div>
-                    </div>
+                  <div className="mt-3 p-3 bg-gray-900/50 rounded border border-gray-600">
+                    <p className="text-xs text-gray-400">
+                      <strong>💡 Pro Tip:</strong> For {gridParams?.marketRegime === 'ranging' ? 'ranging markets' :
+                        gridParams?.marketRegime === 'trending' ? 'trending markets' : 'highly volatile markets'},
+                      use {gridParams?.marketRegime === 'ranging' ? 'higher leverage (3-5x)' :
+                        gridParams?.marketRegime === 'trending' ? 'moderate leverage (2-3x)' : 'conservative leverage (1-2x)'}
+                      for optimal risk-adjusted returns.
+                    </p>
                   </div>
                 </div>
               </div>
+            </div>
+          </div>
+        )}
 
-              {/* Deploy Button */}
+        {/* 3-Column Grid Layout */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 mb-4">
+          {/* Left Column: Chart - 5 columns */}
+          <div className="lg:col-span-5">
+            <CompactChart
+              symbol={selectedSymbol}
+              showGridLines={true}
+              onDataLoaded={handleChartDataLoaded}
+              predictedRange={gridParams?.predictedRange3M}
+              optimalEntryZones={gridParams?.optimalEntryZones}
+            />
+          </div>
+
+          {/* Middle Column: Parameters - 4 columns */}
+          <div className="lg:col-span-4">
+            {gridParams ? (
+              <CompactParameterCards
+                optimizedParams={gridParams}
+                currentPrice={currentPrice}
+                isLoggedIn={isLoggedIn}
+                isPremium={isPremium}
+                aiAnalysis={aiAnalysis}
+              />
+            ) : (
+              <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-4 h-full flex items-center justify-center">
+                <div className="text-center">
+                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-yellow-400 mx-auto mb-4"></div>
+                  <p className="text-gray-400 text-sm">Analyzing market data...</p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Right Column: Actions - 3 columns */}
+          <div className="lg:col-span-3 space-y-4">
+            {/* Deploy CTA */}
+            <div className="bg-gradient-to-br from-yellow-500/10 to-orange-500/10 border border-yellow-500/20 rounded-lg p-4">
+              <h3 className="text-sm font-semibold text-white mb-2">Ready to Deploy?</h3>
+              <p className="text-xs text-gray-400 mb-3">
+                {gridParams
+                  ? `Start with $${gridParams.recommendedInvestment} • ${gridParams.gridLevels} grid levels`
+                  : 'Calculating optimal parameters...'}
+              </p>
               <Link
                 to="/register"
-                className="w-full bg-gradient-to-r from-yellow-400 to-orange-500 text-gray-900 py-3 rounded-lg font-semibold hover:from-yellow-500 hover:to-orange-600 transition-all flex items-center justify-center gap-2"
+                className="w-full bg-gradient-to-r from-yellow-400 to-orange-500 text-gray-900 py-2.5 rounded-lg font-semibold hover:from-yellow-500 hover:to-orange-600 transition-all flex items-center justify-center gap-2 text-sm"
               >
-                Deploy This Grid
+                Get Started Free
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
                 </svg>
               </Link>
+              {!isLoggedIn && (
+                <p className="text-xs text-gray-500 text-center mt-2">
+                  No credit card required
+                </p>
+              )}
             </div>
+
+            {/* Risk Indicator */}
+            {gridParams && (
+              <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-4">
+                <h3 className="text-sm font-semibold text-white mb-2">Risk Assessment</h3>
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="flex-1 bg-gray-700 rounded-full h-2">
+                    <div
+                      className={`h-2 rounded-full ${
+                        gridParams.riskScore <= 3 ? 'bg-green-400' :
+                        gridParams.riskScore <= 6 ? 'bg-yellow-400' :
+                        'bg-red-400'
+                      }`}
+                      style={{ width: `${(gridParams.riskScore / 10) * 100}%` }}
+                    />
+                  </div>
+                  <span className="text-sm font-semibold text-white">
+                    {gridParams.riskScore}/10
+                  </span>
+                </div>
+                <div className="text-xs text-gray-400">
+                  {gridParams.riskScore <= 3 ? 'Low Risk - Conservative' :
+                   gridParams.riskScore <= 6 ? 'Moderate Risk - Balanced' :
+                   'Higher Risk - Aggressive'}
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Backtest Section */}
-        <div className="bg-gradient-to-br from-gray-800/50 to-gray-900/50 border border-gray-700 rounded-2xl p-8 mb-16">
-          <div className="mb-6">
-            <div className="flex items-center gap-3 mb-2">
-              <div className="w-10 h-10 bg-blue-500/10 rounded-lg flex items-center justify-center">
-                <svg className="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                </svg>
-              </div>
-              <h3 className="text-2xl font-bold text-white">90-Day Historical Backtest</h3>
-            </div>
-            <p className="text-gray-400">
-              See how this exact grid configuration performed with real BTC/USDT market data.
-              {!isLoggedIn && ' Login to view detailed trade-by-trade analysis.'}
-            </p>
-          </div>
-
-          {backtestData ? (
-            <BacktestResults backtestData={backtestData} isBlurred={!isLoggedIn} />
+        {/* Monte Carlo Projection - Full Width */}
+        <div>
+          {monteCarloData ? (
+            <MiniMonteCarloWidget
+              monteCarloData={monteCarloData}
+              isLoggedIn={isLoggedIn}
+            />
           ) : (
-            <div className="flex items-center justify-center py-12">
+            <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-8 flex items-center justify-center">
               <div className="text-center">
-                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-400 mx-auto mb-4"></div>
-                <p className="text-gray-400 text-sm">Running backtest simulation...</p>
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-400 mx-auto mb-4"></div>
+                <p className="text-gray-400 text-sm">Running Monte Carlo simulation...</p>
               </div>
             </div>
           )}
         </div>
-
-        {/* How It Works */}
-        <div className="text-center mb-12">
-          <h2 className="text-3xl lg:text-4xl font-bold text-white mb-4">
-            How Grid Trading Works
-          </h2>
-          <p className="text-xl text-gray-400 max-w-3xl mx-auto">
-            Simple, automated, and profitable in volatile markets
-          </p>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-16">
-          <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-8 hover:border-yellow-500/50 transition-colors">
-            <div className="w-12 h-12 bg-yellow-500/10 rounded-lg flex items-center justify-center mb-4 text-2xl">
-              1️⃣
-            </div>
-            <h3 className="text-xl font-bold text-white mb-3">AI Sets the Grid</h3>
-            <p className="text-gray-400">
-              Our AI analyzes BTC volatility, support/resistance levels, and market conditions to create the optimal grid for current market.
-            </p>
-          </div>
-
-          <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-8 hover:border-yellow-500/50 transition-colors">
-            <div className="w-12 h-12 bg-yellow-500/10 rounded-lg flex items-center justify-center mb-4 text-2xl">
-              2️⃣
-            </div>
-            <h3 className="text-xl font-bold text-white mb-3">Auto Buy Low, Sell High</h3>
-            <p className="text-gray-400">
-              As BTC price moves, the bot automatically buys at lower grid levels and sells at higher levels, capturing profit from every swing.
-            </p>
-          </div>
-
-          <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-8 hover:border-yellow-500/50 transition-colors">
-            <div className="w-12 h-12 bg-yellow-500/10 rounded-lg flex items-center justify-center mb-4 text-2xl">
-              3️⃣
-            </div>
-            <h3 className="text-xl font-bold text-white mb-3">Earn 24/7</h3>
-            <p className="text-gray-400">
-              Your grid runs continuously, making money from market volatility even while you sleep. More volatility = more trades = more profit.
-            </p>
-          </div>
-        </div>
       </div>
 
-      {/* CTA Section */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
-        <div className="bg-gradient-to-r from-yellow-500/10 to-orange-500/10 border border-yellow-500/20 rounded-2xl p-12 text-center">
-          <h2 className="text-3xl lg:text-4xl font-bold text-white mb-4">
-            Ready to Start Earning from Bitcoin Volatility?
-          </h2>
-          <p className="text-xl text-gray-400 mb-8">
-            Deploy your free AI-optimized grid bot in less than 2 minutes
-          </p>
-          <Link
-            to="/register"
-            className="inline-block bg-gradient-to-r from-yellow-400 to-orange-500 text-gray-900 px-10 py-4 rounded-lg font-semibold text-lg hover:from-yellow-500 hover:to-orange-600 transition-all transform hover:scale-105 shadow-lg shadow-yellow-500/20"
-          >
-            Get Started Free - No CC Required
-          </Link>
-          <p className="text-sm text-gray-500 mt-4">
-            ✓ Free forever &nbsp; ✓ No credit card &nbsp; ✓ Deploy in 2 minutes
-          </p>
-        </div>
-      </div>
-
-      {/* Footer */}
-      <footer className="border-t border-gray-800 bg-gray-900/50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          <div className="flex flex-col md:flex-row justify-between items-center">
-            <div className="text-gray-400 text-sm mb-4 md:mb-0">
-              © 2025 GridTrader AI. All rights reserved.
-            </div>
-            <div className="flex gap-6 text-sm text-gray-400">
+      {/* Minimal Footer */}
+      <footer className="border-t border-gray-800 bg-gray-900/50 mt-8">
+        <div className="w-full py-6">
+          <div className="flex flex-col md:flex-row justify-between items-center text-xs text-gray-400">
+            <div>© 2025 GridTrader AI. All rights reserved.</div>
+            <div className="flex gap-4 mt-2 md:mt-0">
               <a href="#" className="hover:text-white transition-colors">Terms</a>
               <a href="#" className="hover:text-white transition-colors">Privacy</a>
               <a href="#" className="hover:text-white transition-colors">Support</a>

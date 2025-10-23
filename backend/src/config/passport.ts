@@ -1,7 +1,14 @@
+// Load environment variables first
+import './env';
+
 import passport from 'passport';
 import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
 import { Strategy as JwtStrategy, ExtractJwt } from 'passport-jwt';
-import { prisma } from './database';
+import { query } from '../db';
+
+console.log('[Passport] GOOGLE_CLIENT_ID:', process.env.GOOGLE_CLIENT_ID);
+console.log('[Passport] GOOGLE_CLIENT_SECRET:', process.env.GOOGLE_CLIENT_SECRET ? '***' : 'NOT SET');
+console.log('[Passport] GOOGLE_CALLBACK_URL:', process.env.GOOGLE_CALLBACK_URL);
 
 // Google OAuth Strategy
 passport.use(new GoogleStrategy({
@@ -10,24 +17,34 @@ passport.use(new GoogleStrategy({
   callbackURL: process.env.GOOGLE_CALLBACK_URL!,
 }, async (accessToken, refreshToken, profile, done) => {
   try {
-    let user = await prisma.user.findUnique({
-      where: { googleId: profile.id }
-    });
+    // Check if user exists
+    let result = await query(
+      'SELECT id, email, tier, is_active, created_at, updated_at FROM users WHERE google_id = $1',
+      [profile.id]
+    );
 
-    if (user) {
-      return done(null, user);
+    if (result.rows.length > 0) {
+      const user = result.rows[0];
+      return done(null, {
+        ...user,
+        tier: typeof user.tier === 'string' ? user.tier.toLowerCase() : user.tier,
+      });
     }
 
     // Create new user
-    user = await prisma.user.create({
-      data: {
-        email: profile.emails![0].value,
-        googleId: profile.id,
-        tier: 'FREE',
-      }
-    });
+    result = await query(
+      `INSERT INTO users (email, google_id, tier)
+       VALUES ($1, $2, $3)
+       RETURNING id, email, tier, is_active, created_at, updated_at`,
+      [profile.emails![0].value, profile.id, 'FREE']
+    );
 
-    return done(null, user);
+    const user = result.rows[0];
+
+    return done(null, {
+      ...user,
+      tier: typeof user.tier === 'string' ? user.tier.toLowerCase() : user.tier,
+    });
   } catch (error) {
     return done(error, undefined);
   }
@@ -39,23 +56,20 @@ passport.use(new JwtStrategy({
   secretOrKey: process.env.JWT_SECRET!,
 }, async (payload, done) => {
   try {
-    const user = await prisma.user.findUnique({
-      where: { id: payload.sub },
-      select: {
-        id: true,
-        email: true,
-        tier: true,
-        isActive: true,
-        createdAt: true,
-        updatedAt: true,
-      }
-    });
+    const result = await query(
+      'SELECT id, email, tier, is_active, created_at, updated_at FROM users WHERE id = $1',
+      [payload.sub]
+    );
 
-    if (!user || !user.isActive) {
+    if (result.rows.length === 0 || !result.rows[0].is_active) {
       return done(null, false);
     }
 
-    return done(null, user);
+    const user = result.rows[0];
+    return done(null, {
+      ...user,
+      tier: typeof user.tier === 'string' ? user.tier.toLowerCase() : user.tier,
+    });
   } catch (error) {
     return done(error, false);
   }
@@ -68,19 +82,16 @@ passport.serializeUser((user: any, done) => {
 
 passport.deserializeUser(async (id: string, done) => {
   try {
-    const user = await prisma.user.findUnique({
-      where: { id },
-      select: {
-        id: true,
-        email: true,
-        tier: true,
-        isActive: true,
-        createdAt: true,
-        updatedAt: true,
-      }
-    });
+    const result = await query(
+      'SELECT id, email, tier, is_active, created_at, updated_at FROM users WHERE id = $1',
+      [id]
+    );
 
-    done(null, user);
+    const user = result.rows[0];
+    done(null, user ? {
+      ...user,
+      tier: typeof user.tier === 'string' ? user.tier.toLowerCase() : user.tier,
+    } : null);
   } catch (error) {
     done(error, null);
   }

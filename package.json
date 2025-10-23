@@ -14,7 +14,7 @@
     "install:backend": "cd backend && npm install",
     "install:shared": "cd shared && npm install",
     "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
-    "dev:frontend": "cd frontend && npm start",
+    "dev:frontend": "cd frontend && npm run dev",
     "dev:backend": "cd backend && npm run dev",
     "build": "npm run build:shared && npm run build:frontend && npm run build:backend",
     "build:shared": "cd shared && npm run build",

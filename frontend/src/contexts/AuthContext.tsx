@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import type { User, AuthResponse } from '@gridtrader/shared';
+import { UserTier } from '@gridtrader/shared';
 
 interface AuthContextType {
   user: User | null;
@@ -25,6 +26,49 @@ interface AuthProviderProps {
   children: React.ReactNode;
 }
 
+const normalizeUser = (rawUser: any): User => {
+  if (!rawUser) {
+    throw new Error('Invalid user payload');
+  }
+
+  let parsed = rawUser;
+  if (typeof rawUser === 'string') {
+    try {
+      parsed = JSON.parse(rawUser);
+    } catch (error) {
+      console.error('Failed to parse user payload', error);
+      throw error;
+    }
+  }
+
+  // Handle corrupted email field that contains JSON
+  let actualEmail = parsed.email;
+  if (actualEmail && typeof actualEmail === 'string' && actualEmail.startsWith('{')) {
+    try {
+      const emailParsed = JSON.parse(actualEmail);
+      actualEmail = emailParsed.email || actualEmail;
+      console.warn('Detected and fixed corrupted email field in user data');
+    } catch (e) {
+      console.warn('Email field appears to be JSON but failed to parse');
+    }
+  }
+
+  const tierValue = typeof parsed.tier === 'string'
+    ? parsed.tier.toLowerCase()
+    : UserTier.FREE;
+
+  const createdAt = parsed.createdAt || parsed.created_at;
+  const updatedAt = parsed.updatedAt || parsed.updated_at;
+
+  return {
+    id: parsed.id,
+    email: actualEmail,
+    tier: (tierValue as UserTier) ?? UserTier.FREE,
+    createdAt: createdAt ? new Date(createdAt) : new Date(),
+    updatedAt: updatedAt ? new Date(updatedAt) : new Date(),
+  };
+};
+
 export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -45,7 +89,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
           if (response.ok) {
             const data = await response.json();
             if (data.success) {
-              setUser(data.data);
+              setUser(normalizeUser(data.data));
             } else {
               // Token invalid, clear storage
               localStorage.removeItem('accessToken');
@@ -82,7 +126,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       throw new Error(data.error || 'Login failed');
     }
 
-    setUser(data.data.user);
+    setUser(normalizeUser(data.data.user));
     localStorage.setItem('accessToken', data.data.accessToken);
     localStorage.setItem('refreshToken', data.data.refreshToken);
 
@@ -110,7 +154,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       throw new Error(data.error || 'Invalid OAuth tokens');
     }
 
-    setUser(data.data);
+    setUser(normalizeUser(data.data));
   };
 
   const register = async (email: string, password: string): Promise<AuthResponse> => {
@@ -128,7 +172,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       throw new Error(data.error || 'Registration failed');
     }
 
-    setUser(data.data.user);
+    setUser(normalizeUser(data.data.user));
     localStorage.setItem('accessToken', data.data.accessToken);
     localStorage.setItem('refreshToken', data.data.refreshToken);
 
@@ -152,6 +196,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       setUser(null);
       localStorage.removeItem('accessToken');
       localStorage.removeItem('refreshToken');
+      localStorage.removeItem('user');
     }
   };
 
@@ -179,7 +224,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     localStorage.setItem('refreshToken', data.data.refreshToken);
 
     if (data.data.user) {
-      setUser(data.data.user);
+      setUser(normalizeUser(data.data.user));
     }
   };
 

@@ -1,43 +1,44 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { prisma } from '../config/database';
+import { query } from '../db';
 import { User, AuthResponse, UserTier } from '@gridtrader/shared';
-import { User as PrismaUser, UserTier as PrismaUserTier } from '@prisma/client';
+
+interface DbUser {
+  id: string;
+  email: string;
+  password_hash?: string;
+  google_id?: string;
+  tier: string;
+  is_active: boolean;
+  created_at: Date;
+  updated_at: Date;
+}
 
 export class AuthService {
 
-  // Convert Prisma User to shared User type
-  private convertToSharedUser(prismaUser: PrismaUser): User {
+  // Convert DB user to shared User type
+  private convertToSharedUser(dbUser: DbUser): User {
+    const normalizedTier = typeof dbUser.tier === 'string'
+      ? (dbUser.tier.toLowerCase() as UserTier)
+      : UserTier.FREE;
     return {
-      id: prismaUser.id,
-      email: prismaUser.email,
-      tier: this.convertUserTier(prismaUser.tier),
-      createdAt: prismaUser.createdAt,
-      updatedAt: prismaUser.updatedAt,
+      id: dbUser.id,
+      email: dbUser.email,
+      tier: normalizedTier,
+      createdAt: dbUser.created_at,
+      updatedAt: dbUser.updated_at,
     };
   }
 
-  // Convert Prisma UserTier to shared UserTier
-  private convertUserTier(prismaTier: PrismaUserTier): UserTier {
-    switch (prismaTier) {
-      case PrismaUserTier.FREE:
-        return UserTier.FREE;
-      case PrismaUserTier.PRO:
-        return UserTier.PRO;
-      case PrismaUserTier.PREMIUM:
-        return UserTier.PREMIUM;
-      default:
-        return UserTier.FREE;
-    }
-  }
   // Register new user
   async register(email: string, password: string): Promise<AuthResponse> {
     // Check if user already exists
-    const existingUser = await prisma.user.findUnique({
-      where: { email }
-    });
+    const existingUserResult = await query(
+      'SELECT id FROM users WHERE email = $1',
+      [email]
+    );
 
-    if (existingUser) {
+    if (existingUserResult.rows.length > 0) {
       throw new Error('User with this email already exists');
     }
 
@@ -45,20 +46,14 @@ export class AuthService {
     const passwordHash = await bcrypt.hash(password, 12);
 
     // Create user
-    const user = await prisma.user.create({
-      data: {
-        email,
-        passwordHash,
-        tier: PrismaUserTier.FREE,
-      },
-      select: {
-        id: true,
-        email: true,
-        tier: true,
-        createdAt: true,
-        updatedAt: true,
-      }
-    });
+    const result = await query(
+      `INSERT INTO users (email, password_hash, tier)
+       VALUES ($1, $2, $3)
+       RETURNING id, email, tier, created_at, updated_at`,
+      [email, passwordHash, 'FREE']
+    );
+
+    const user = result.rows[0];
 
     // Generate tokens
     const { accessToken, refreshToken } = this.generateTokens(user);
@@ -76,39 +71,33 @@ export class AuthService {
   // Login user
   async login(email: string, password: string): Promise<AuthResponse> {
     // Find user
-    const user = await prisma.user.findUnique({
-      where: { email },
-      select: {
-        id: true,
-        email: true,
-        passwordHash: true,
-        tier: true,
-        isActive: true,
-        createdAt: true,
-        updatedAt: true,
-      }
-    });
+    const result = await query(
+      'SELECT id, email, password_hash, tier, is_active, created_at, updated_at FROM users WHERE email = $1',
+      [email]
+    );
 
-    if (!user) {
+    if (result.rows.length === 0) {
       throw new Error('Invalid credentials');
     }
 
-    if (!user.isActive) {
+    const user = result.rows[0];
+
+    if (!user.is_active) {
       throw new Error('Account is deactivated');
     }
 
-    if (!user.passwordHash) {
+    if (!user.password_hash) {
       throw new Error('Please login with Google OAuth');
     }
 
     // Verify password
-    const isValidPassword = await bcrypt.compare(password, user.passwordHash);
+    const isValidPassword = await bcrypt.compare(password, user.password_hash);
     if (!isValidPassword) {
       throw new Error('Invalid credentials');
     }
 
     // Remove password hash from user object
-    const { passwordHash: _, ...userWithoutPassword } = user;
+    const { password_hash: _, ...userWithoutPassword } = user;
 
     // Generate tokens
     const { accessToken, refreshToken } = this.generateTokens(userWithoutPassword);
@@ -117,7 +106,7 @@ export class AuthService {
     await this.storeRefreshToken(user.id, refreshToken);
 
     return {
-      user: userWithoutPassword,
+      user: this.convertToSharedUser(user),
       accessToken,
       refreshToken,
     };
@@ -130,21 +119,16 @@ export class AuthService {
       const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET!) as any;
 
       // Get user
-      const user = await prisma.user.findUnique({
-        where: { id: decoded.sub },
-        select: {
-          id: true,
-          email: true,
-          tier: true,
-          isActive: true,
-          createdAt: true,
-          updatedAt: true,
-        }
-      });
+      const result = await query(
+        'SELECT id, email, tier, is_active, created_at, updated_at FROM users WHERE id = $1',
+        [decoded.sub]
+      );
 
-      if (!user || !user.isActive) {
+      if (result.rows.length === 0 || !result.rows[0].is_active) {
         throw new Error('User not found or inactive');
       }
+
+      const user = result.rows[0];
 
       // Generate new tokens
       const tokens = this.generateTokens(user);
@@ -167,20 +151,19 @@ export class AuthService {
   // Change password
   async changePassword(userId: string, currentPassword: string, newPassword: string): Promise<void> {
     // Get user with password
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: {
-        id: true,
-        passwordHash: true,
-      }
-    });
+    const result = await query(
+      'SELECT id, password_hash FROM users WHERE id = $1',
+      [userId]
+    );
 
-    if (!user || !user.passwordHash) {
+    if (result.rows.length === 0 || !result.rows[0].password_hash) {
       throw new Error('User not found or uses OAuth login');
     }
 
+    const user = result.rows[0];
+
     // Verify current password
-    const isValidPassword = await bcrypt.compare(currentPassword, user.passwordHash);
+    const isValidPassword = await bcrypt.compare(currentPassword, user.password_hash);
     if (!isValidPassword) {
       throw new Error('Current password is incorrect');
     }
@@ -189,10 +172,10 @@ export class AuthService {
     const newPasswordHash = await bcrypt.hash(newPassword, 12);
 
     // Update password
-    await prisma.user.update({
-      where: { id: userId },
-      data: { passwordHash: newPasswordHash }
-    });
+    await query(
+      'UPDATE users SET password_hash = $1 WHERE id = $2',
+      [newPasswordHash, userId]
+    );
   }
 
   // Private methods
@@ -200,7 +183,7 @@ export class AuthService {
     const payload = {
       sub: user.id,
       email: user.email,
-      tier: user.tier,
+      tier: typeof user.tier === 'string' ? user.tier.toLowerCase() : UserTier.FREE,
     };
 
     const accessToken = jwt.sign(payload, process.env.JWT_SECRET!, {
@@ -230,7 +213,35 @@ export class AuthService {
   }
 
   // OAuth login for Google/other providers
-  async oauthLogin(user: PrismaUser): Promise<AuthResponse> {
+  async oauthLogin(email: string, googleId: string): Promise<AuthResponse> {
+    // Try to find existing user
+    let result = await query(
+      'SELECT id, email, tier, is_active, created_at, updated_at FROM users WHERE google_id = $1 OR email = $2',
+      [googleId, email]
+    );
+
+    let user;
+    if (result.rows.length === 0) {
+      // Create new user
+      result = await query(
+        `INSERT INTO users (email, google_id, tier)
+         VALUES ($1, $2, $3)
+         RETURNING id, email, tier, is_active, created_at, updated_at`,
+        [email, googleId, 'FREE']
+      );
+      user = result.rows[0];
+    } else {
+      user = result.rows[0];
+      // Update google_id if not set
+      if (!user.google_id) {
+        await query('UPDATE users SET google_id = $1 WHERE id = $2', [googleId, user.id]);
+      }
+    }
+
+    if (!user.is_active) {
+      throw new Error('Account is deactivated');
+    }
+
     const sharedUser = this.convertToSharedUser(user);
 
     // Generate tokens

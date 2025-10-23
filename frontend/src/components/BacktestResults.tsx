@@ -6,8 +6,11 @@ interface Trade {
   timestamp: string;
   price: number;
   type: 'BUY' | 'SELL';
+  side: 'LONG' | 'SHORT';
   profit: number;
-  cumulativePnL: number;
+  fees: number;
+  netProfit: number;
+  balance: number;
 }
 
 interface BacktestData {
@@ -15,11 +18,13 @@ interface BacktestData {
   totalTrades: number;
   profitableTrades: number;
   totalProfit: number;
+  totalFees: number;
   totalReturn: number;
   winRate: number;
   maxDrawdown: number;
   sharpeRatio: number;
   investmentAmount: number;
+  leverage: number;
 }
 
 interface BacktestResultsProps {
@@ -28,56 +33,58 @@ interface BacktestResultsProps {
 }
 
 const BacktestResults: React.FC<BacktestResultsProps> = ({ backtestData, isBlurred = false }) => {
-  // Create stable chart data - only P&L line, no scatter points
+  // Create stable chart data - balance over time
   const chartData = useMemo(() => {
     if (!backtestData.trades || backtestData.trades.length === 0) {
       return [];
     }
 
-    // Group by timestamp to avoid duplicate points causing redraws
-    const dataByTime = new Map<string, { timestamp: string; cumulativePnL: number }>();
+    // Create a data point for each trade showing the running balance
+    const data = backtestData.trades.map((trade) => ({
+      timestamp: trade.timestamp,
+      balance: trade.balance,
+      pnl: trade.balance - backtestData.investmentAmount
+    }));
 
-    backtestData.trades.forEach((trade) => {
-      dataByTime.set(trade.timestamp, {
-        timestamp: trade.timestamp,
-        cumulativePnL: trade.cumulativePnL
-      });
-    });
+    return data;
+  }, [backtestData.trades, backtestData.investmentAmount]);
 
-    return Array.from(dataByTime.values());
-  }, [backtestData.trades]);
+  // Calculate Y-axis domain for better scaling
+  const yAxisDomain = useMemo(() => {
+    if (chartData.length === 0) return [0, 100];
 
-  // Get completed positions (paired buy/sell)
+    const balances = chartData.map(d => d.balance);
+    const minBalance = Math.min(...balances, backtestData.investmentAmount);
+    const maxBalance = Math.max(...balances, backtestData.investmentAmount);
+    const range = maxBalance - minBalance;
+
+    // Add 10% padding on top and bottom for better visualization
+    const padding = Math.max(range * 0.1, 5); // At least $5 padding
+
+    return [
+      Math.floor(minBalance - padding),
+      Math.ceil(maxBalance + padding)
+    ];
+  }, [chartData, backtestData.investmentAmount]);
+
+  // Get completed positions (exits only - both LONG and SHORT)
   const positions = useMemo(() => {
-    const pairs: Array<{
-      buyTrade: Trade;
-      sellTrade: Trade;
-      profit: number;
-      profitPct: number;
-      duration: string;
-    }> = [];
+    const completedTrades = backtestData.trades.filter(trade =>
+      (trade.side === 'LONG' && trade.type === 'SELL') ||
+      (trade.side === 'SHORT' && trade.type === 'BUY')
+    );
 
-    const buyTrades: Trade[] = [];
-
-    backtestData.trades.forEach((trade) => {
-      if (trade.type === 'BUY') {
-        buyTrades.push(trade);
-      } else if (trade.type === 'SELL' && buyTrades.length > 0) {
-        const buyTrade = buyTrades.shift()!;
-        const profit = trade.price - buyTrade.price;
-        const profitPct = (profit / buyTrade.price) * 100;
-
-        pairs.push({
-          buyTrade,
-          sellTrade: trade,
-          profit,
-          profitPct,
-          duration: `${buyTrade.timestamp} → ${trade.timestamp}`
-        });
-      }
-    });
-
-    return pairs;
+    return completedTrades.map((trade, index) => ({
+      index: index + 1,
+      timestamp: trade.timestamp,
+      price: trade.price,
+      side: trade.side,
+      type: trade.type,
+      profit: trade.profit,
+      netProfit: trade.netProfit,
+      fees: trade.fees,
+      balance: trade.balance
+    }));
   }, [backtestData.trades]);
 
   const CustomTooltip = ({ active, payload }: any) => {
@@ -87,10 +94,10 @@ const BacktestResults: React.FC<BacktestResultsProps> = ({ backtestData, isBlurr
         <div className="bg-gray-900/95 border border-gray-700 rounded-lg px-4 py-3">
           <p className="text-gray-400 text-xs mb-1">{data.timestamp}</p>
           <p className="text-yellow-400 text-sm font-semibold">
-            Balance: ${(backtestData.investmentAmount + data.cumulativePnL).toFixed(2)}
+            Balance: ${data.balance.toFixed(2)}
           </p>
-          <p className={`text-sm font-semibold ${data.cumulativePnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-            P&L: {data.cumulativePnL >= 0 ? '+' : ''}${data.cumulativePnL.toFixed(2)}
+          <p className={`text-sm font-semibold ${data.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+            P&L: {data.pnl >= 0 ? '+' : ''}${data.pnl.toFixed(2)}
           </p>
         </div>
       );
@@ -186,14 +193,15 @@ const BacktestResults: React.FC<BacktestResultsProps> = ({ backtestData, isBlurr
               <YAxis
                 stroke="#6B7280"
                 style={{ fontSize: '10px' }}
-                tickFormatter={(value) => `$${(backtestData.investmentAmount + value).toFixed(0)}`}
+                tickFormatter={(value) => `$${value.toFixed(2)}`}
                 label={{ value: 'Account Balance ($)', angle: -90, position: 'insideLeft', style: { fontSize: '11px', fill: '#9CA3AF' } }}
+                domain={yAxisDomain}
               />
               <Tooltip content={<CustomTooltip />} />
 
               {/* Initial investment line */}
               <ReferenceLine
-                y={0}
+                y={backtestData.investmentAmount}
                 stroke="#6B7280"
                 strokeDasharray="3 3"
                 label={{
@@ -204,20 +212,21 @@ const BacktestResults: React.FC<BacktestResultsProps> = ({ backtestData, isBlurr
                 }}
               />
 
-              {/* Area showing balance growth */}
+              {/* Area showing balance growth/loss */}
               <Area
                 type="monotone"
-                dataKey="cumulativePnL"
+                dataKey="balance"
                 fill="#10B981"
                 fillOpacity={0.2}
                 stroke="none"
                 isAnimationActive={false}
+                baseValue={backtestData.investmentAmount}
               />
 
               {/* Balance line */}
               <Line
                 type="monotone"
-                dataKey="cumulativePnL"
+                dataKey="balance"
                 stroke="#10B981"
                 strokeWidth={2.5}
                 dot={false}
@@ -248,39 +257,43 @@ const BacktestResults: React.FC<BacktestResultsProps> = ({ backtestData, isBlurr
             <thead className="sticky top-0 bg-gray-800 border-b border-gray-700">
               <tr>
                 <th className="text-left text-xs text-gray-400 font-semibold py-3 px-3">#</th>
-                <th className="text-left text-xs text-gray-400 font-semibold py-3 px-3">Entry</th>
-                <th className="text-left text-xs text-gray-400 font-semibold py-3 px-3">Exit</th>
-                <th className="text-left text-xs text-gray-400 font-semibold py-3 px-3">Period</th>
-                <th className="text-right text-xs text-gray-400 font-semibold py-3 px-3">Profit</th>
-                <th className="text-right text-xs text-gray-400 font-semibold py-3 px-3">Return</th>
+                <th className="text-left text-xs text-gray-400 font-semibold py-3 px-3">Side</th>
+                <th className="text-left text-xs text-gray-400 font-semibold py-3 px-3">Exit Price</th>
+                <th className="text-left text-xs text-gray-400 font-semibold py-3 px-3">Date</th>
+                <th className="text-right text-xs text-gray-400 font-semibold py-3 px-3">Gross P&L</th>
+                <th className="text-right text-xs text-gray-400 font-semibold py-3 px-3">Fees</th>
+                <th className="text-right text-xs text-gray-400 font-semibold py-3 px-3">Net P&L</th>
+                <th className="text-right text-xs text-gray-400 font-semibold py-3 px-3">Balance</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-800">
-              {positions.map((position, index) => (
-                <tr key={index} className="hover:bg-gray-800/50 transition-colors">
-                  <td className="py-3 px-3 text-gray-400">#{index + 1}</td>
+              {positions.map((position) => (
+                <tr key={position.index} className="hover:bg-gray-800/50 transition-colors">
+                  <td className="py-3 px-3 text-gray-400">#{position.index}</td>
                   <td className="py-3 px-3">
-                    <div className="flex items-center gap-2">
-                      <span className="inline-block w-2 h-2 bg-green-500 rounded-full"></span>
-                      <span className="text-white font-medium">${position.buyTrade.price.toLocaleString()}</span>
-                    </div>
-                    <div className="text-xs text-gray-500">{position.buyTrade.timestamp}</div>
+                    <span className={`inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-semibold ${
+                      position.side === 'LONG' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+                    }`}>
+                      {position.side === 'LONG' ? '↗' : '↘'} {position.side}
+                    </span>
                   </td>
                   <td className="py-3 px-3">
-                    <div className="flex items-center gap-2">
-                      <span className="inline-block w-2 h-2 bg-red-500 rounded-full"></span>
-                      <span className="text-white font-medium">${position.sellTrade.price.toLocaleString()}</span>
-                    </div>
-                    <div className="text-xs text-gray-500">{position.sellTrade.timestamp}</div>
+                    <span className="text-white font-medium">${position.price.toFixed(2)}</span>
                   </td>
                   <td className="py-3 px-3 text-gray-400 text-xs">
-                    {position.buyTrade.timestamp === position.sellTrade.timestamp ? 'Same day' : 'Multi-day'}
+                    {position.timestamp}
                   </td>
                   <td className={`py-3 px-3 text-right font-semibold ${position.profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                     {position.profit >= 0 ? '+' : ''}${position.profit.toFixed(2)}
                   </td>
-                  <td className={`py-3 px-3 text-right font-semibold ${position.profitPct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {position.profitPct >= 0 ? '+' : ''}{position.profitPct.toFixed(2)}%
+                  <td className="py-3 px-3 text-right text-gray-400">
+                    -${position.fees.toFixed(2)}
+                  </td>
+                  <td className={`py-3 px-3 text-right font-semibold ${position.netProfit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {position.netProfit >= 0 ? '+' : ''}${position.netProfit.toFixed(2)}
+                  </td>
+                  <td className="py-3 px-3 text-right font-semibold text-white">
+                    ${position.balance.toFixed(2)}
                   </td>
                 </tr>
               ))}
@@ -327,6 +340,18 @@ const BacktestResults: React.FC<BacktestResultsProps> = ({ backtestData, isBlurr
               </span>
             </div>
             <div className="flex justify-between items-center">
+              <span className="text-sm text-gray-400">Leverage</span>
+              <span className="text-sm font-semibold text-yellow-400">
+                {backtestData.leverage}x
+              </span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-sm text-gray-400">Total Fees Paid</span>
+              <span className="text-sm font-semibold text-red-400">
+                -${backtestData.totalFees.toFixed(2)}
+              </span>
+            </div>
+            <div className="flex justify-between items-center">
               <span className="text-sm text-gray-400">Total Profit</span>
               <span className={`text-sm font-semibold ${backtestData.totalProfit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                 {backtestData.totalProfit >= 0 ? '+' : ''}${backtestData.totalProfit.toFixed(2)}
@@ -357,7 +382,7 @@ const BacktestResults: React.FC<BacktestResultsProps> = ({ backtestData, isBlurr
           <div>
             <p className="text-xs font-semibold text-yellow-400 mb-1">Backtest Disclaimer</p>
             <p className="text-xs text-gray-400">
-              Past performance does not guarantee future results. This backtest simulates grid trading on historical data and does not account for fees, slippage, or market conditions. Actual results may vary.
+              Past performance does not guarantee future results. This backtest simulates leveraged futures grid trading on historical data. Includes realistic trading fees (0.02% maker, 0.04% taker) and slippage (0.05%). Leveraged trading carries significant risk of loss. Actual results may vary significantly.
             </p>
           </div>
         </div>

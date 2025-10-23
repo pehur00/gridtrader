@@ -37,8 +37,12 @@ const AuthCallback: React.FC = () => {
         // Use the auth context to handle OAuth login
         await loginWithTokens(accessToken, refreshToken);
 
-        // Redirect to dashboard after successful login
-        navigate('/dashboard');
+        // Check if there's a stored redirect path from before OAuth
+        const redirectPath = sessionStorage.getItem('redirectAfterLogin') || '/';
+        sessionStorage.removeItem('redirectAfterLogin'); // Clean up
+
+        // Redirect to the stored path or dashboard
+        navigate(redirectPath, { replace: true });
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Authentication failed';
         setError(message);
